@@ -1,8 +1,14 @@
+// Health Connect marks the feature-availability API (and its FEATURE_* constants) as
+// experimental; it is the documented way to check whether a record type or capability such
+// as background reads exists in the Health Connect build installed on the device.
+@file:OptIn(androidx.health.connect.client.feature.ExperimentalFeatureAvailabilityApi::class)
+
 package com.hcwebhook.app
 
 import android.content.Context
 import android.util.Log
 import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.HealthConnectFeatures
 import androidx.health.connect.client.permission.HealthPermission
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -23,7 +29,17 @@ import com.hcwebhook.app.dashboard.DashboardSnapshot
 import kotlin.math.roundToLong
 import kotlin.reflect.KClass
 
-enum class HealthDataType(val nameResId: Int, val recordClass: KClass<out Record>, val rationaleResId: Int) {
+/**
+ * [nameResId]/[rationaleResId] are UI strings, [recordClass] is the Health Connect record,
+ * and [requiredFeature] is the Health Connect feature that must exist on the device for the
+ * type to be readable at all (null when every supported Health Connect build provides it).
+ */
+enum class HealthDataType(
+    val nameResId: Int,
+    val recordClass: KClass<out Record>,
+    val rationaleResId: Int,
+    val requiredFeature: Int? = null,
+) {
     STEPS(
         R.string.dt_steps_name, StepsRecord::class, R.string.dt_steps_rationale
     ),
@@ -64,7 +80,9 @@ enum class HealthDataType(val nameResId: Int, val recordClass: KClass<out Record
         R.string.dt_temp_name, BodyTemperatureRecord::class, R.string.dt_temp_rationale
     ),
     SKIN_TEMPERATURE(
-        R.string.dt_skin_temp_name, SkinTemperatureRecord::class, R.string.dt_skin_temp_rationale
+        R.string.dt_skin_temp_name, SkinTemperatureRecord::class, R.string.dt_skin_temp_rationale,
+        // Only readable when the device's Health Connect build ships the feature (1.1.0+).
+        requiredFeature = HealthConnectFeatures.FEATURE_SKIN_TEMPERATURE,
     ),
     RESPIRATORY_RATE(
         R.string.dt_resp_name, RespiratoryRateRecord::class, R.string.dt_resp_rationale
@@ -2138,6 +2156,62 @@ class HealthConnectManager(private val context: Context) {
         return healthConnectClient.permissionController.getGrantedPermissions()
     }
 
+    /**
+     * Whether the Health Connect build installed on this device supports [feature].
+     *
+     * Feature availability is the documented way to detect capabilities that only exist in
+     * newer Health Connect versions (skin temperature, background reads, history reads).
+     * Users may still be running an older APK, or an Android 13 build whose system module
+     * never received the feature.
+     */
+    fun isFeatureAvailable(feature: Int): Boolean {
+        if (!isHealthConnectAvailable()) return false
+        return try {
+            healthConnectClient.features.getFeatureStatus(feature) ==
+                HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
+        } catch (e: Exception) {
+            Log.w(TAG, "Feature status lookup failed for feature $feature: ${e.message}")
+            false
+        }
+    }
+
+    /** True when [type] can be read on this device at all, independently of permissions. */
+    fun isDataTypeSupported(type: HealthDataType): Boolean =
+        type.requiredFeature?.let { isFeatureAvailable(it) } ?: true
+
+    /** Whether this device's Health Connect can read data while the app is not in the foreground. */
+    fun isBackgroundReadSupported(): Boolean =
+        isFeatureAvailable(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND)
+
+    /** Whether this device's Health Connect can read records older than 30 days. */
+    fun isHistoryReadSupported(): Boolean =
+        isFeatureAvailable(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_HISTORY)
+
+    /**
+     * Drops permissions this device's Health Connect cannot grant.
+     *
+     * Requesting a permission the installed Health Connect does not know (e.g.
+     * `READ_SKIN_TEMPERATURE` on 1.0.x, or `READ_HEALTH_DATA_IN_BACKGROUND` /
+     * `READ_HEALTH_DATA_HISTORY` where the feature is unavailable) makes the permission
+     * screen fail as a whole, so no permission at all is granted. Filtering keeps the
+     * remaining permissions requestable and lets sync stay usable on such devices.
+     *
+     * Returns the input unchanged when Health Connect is unavailable, so callers can
+     * still surface the underlying error.
+     */
+    fun filterSupportedPermissions(permissions: Set<String>): Set<String> {
+        if (permissions.isEmpty() || !isHealthConnectAvailable()) return permissions
+
+        // Only the requested permissions are probed, so the common case (plain record
+        // permissions) never touches the feature API.
+        val unsupported = HealthPermissionSupport.unsupportedPermissions(
+            requestedPermissions = permissions,
+            isFeatureAvailable = ::isFeatureAvailable,
+            skinTemperaturePermission = HealthPermission.getReadPermission(SkinTemperatureRecord::class),
+        )
+        return permissions - unsupported
+    }
+
     suspend fun requestPermissions(permissions: Set<String>): android.content.Intent {
         if (!isHealthConnectAvailable()) {
             throw IllegalStateException("Health Connect is not available on this device")
@@ -2183,12 +2257,13 @@ class HealthConnectManager(private val context: Context) {
                 permissions.add(BACKGROUND_PERMISSION_STR)
             }
             if (includeHistoryPermission) {
-                permissions.add("android.permission.health.READ_HEALTH_DATA_HISTORY")
+                permissions.add(HISTORY_PERMISSION_STR)
             }
             return permissions
         }
 
         const val BACKGROUND_PERMISSION_STR = "android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND"
+        const val HISTORY_PERMISSION_STR = "android.permission.health.READ_HEALTH_DATA_HISTORY"
 
         val INITIAL_PERMISSIONS: Set<String>
             get() = ALL_PERMISSIONS + BACKGROUND_PERMISSION_STR
@@ -2227,7 +2302,7 @@ class HealthConnectManager(private val context: Context) {
             HealthPermission.getReadPermission(CervicalMucusRecord::class),
             HealthPermission.getReadPermission(SexualActivityRecord::class),
             HealthPermission.getReadPermission(BasalBodyTemperatureRecord::class),
-            "android.permission.health.READ_HEALTH_DATA_HISTORY"
+            HISTORY_PERMISSION_STR
         )
     }
 }

@@ -203,6 +203,9 @@
     <string name="config_bg_perm_title">需要后台许可</string>
     <string name="config_bg_perm_desc">要按计划或间隔自动同步数据，您必须授予 Health Connect 访问权限以供后台使用。</string>
     <string name="config_action_grant_bg">授予后台权限</string>
+    <string name="config_bg_perm_unsupported_title">不支持后台读取</string>
+    <string name="config_bg_perm_unsupported_desc">此设备的 Health Connect 版本无法在后台读取数据，因此无法在此授予该权限。定时同步仍会执行；间隔同步仅在应用打开时读取数据。更新 Health Connect 可能启用后台读取。</string>
+    <string name="config_perms_nothing_supported">此设备的 Health Connect 不支持这些权限</string>
     <string name="config_last_sync_title">上次同步</string>
     <string name="config_action_grant">授予许可</string>
     <string name="config_action_grant_short">授予</string>
@@ -286,6 +289,7 @@
     <string name="perms_rationale_desc">Health Connect to Webhook 需要访问您的健康和健身数据。这些数据严格用于实现应用程序的核心功能：将您选择的健康指标（例如步数、睡眠和心率）直接安全地传输到您的个人 Webhook URL。我们不会向任何第三方出售或共享您的数据。只有您在下面明确选择配置的数据类型才会被请求和同步。</string>
     <string name="perms_status_granted">的确</string>
     <string name="perms_status_not_granted">未授予</string>
+    <string name="perms_status_unsupported">不支持</string>
     <string name="logs_clear_title">清除所有日志吗？</string>
     <string name="logs_clear_desc">所有 Webhook 日志都将被永久删除。</string>
     <string name="action_clear_logs">清除日志</string>

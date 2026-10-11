@@ -58,7 +58,9 @@ import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import com.hcwebhook.app.*
 import com.hcwebhook.app.ui.theme.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Calendar
 import com.hcwebhook.app.R
 import androidx.lifecycle.Lifecycle
@@ -164,18 +166,69 @@ fun ConfigurationScreen(
         }
     }
 
-    val missingPermissionsForEnabled = remember(enabledDataTypes, grantedPermissionsSet) {
-        val baseMissing = enabledDataTypes.mapNotNull { dataType ->
-            val permission = HealthPermission.getReadPermission(dataType.recordClass)
-            if (permission !in grantedPermissionsSet) permission else null
-        }.toMutableSet()
-        
-        if (baseMissing.isNotEmpty() && "android.permission.health.READ_HEALTH_DATA_HISTORY" !in grantedPermissionsSet) {
-            baseMissing.add("android.permission.health.READ_HEALTH_DATA_HISTORY")
+    // Health Connect builds differ in which records and capabilities they expose (skin
+    // temperature, background and history reads). Requesting a permission the installed
+    // build cannot grant fails the permission screen as a whole, so device support is
+    // probed once and drives both the request set and the UI on this screen.
+    var healthConnectSupport by remember { mutableStateOf(HealthConnectSupport()) }
+
+    LaunchedEffect(sdkStatus) {
+        if (sdkStatus != HealthConnectClient.SDK_AVAILABLE) return@LaunchedEffect
+        val manager = HealthConnectManager(context)
+        if (!manager.isHealthConnectAvailable()) return@LaunchedEffect
+        healthConnectSupport = withContext(Dispatchers.IO) {
+            HealthConnectSupport(
+                backgroundRead = manager.isBackgroundReadSupported(),
+                historyRead = manager.isHistoryReadSupported(),
+                unsupportedDataTypes = HealthDataType.entries
+                    .filterNot { manager.isDataTypeSupported(it) }
+                    .toSet(),
+            )
+        }
+    }
+
+    val missingPermissionsForEnabled = remember(
+        enabledDataTypes, grantedPermissionsSet, healthConnectSupport
+    ) {
+        val baseMissing = enabledDataTypes
+            .filterNot { it in healthConnectSupport.unsupportedDataTypes }
+            .mapNotNull { dataType ->
+                val permission = HealthPermission.getReadPermission(dataType.recordClass)
+                if (permission !in grantedPermissionsSet) permission else null
+            }
+            .toMutableSet()
+
+        if (healthConnectSupport.historyRead &&
+            baseMissing.isNotEmpty() &&
+            HealthConnectManager.HISTORY_PERMISSION_STR !in grantedPermissionsSet
+        ) {
+            baseMissing.add(HealthConnectManager.HISTORY_PERMISSION_STR)
         }
         baseMissing.toSet()
     }
     val isBackgroundGranted = HealthConnectManager.BACKGROUND_PERMISSION_STR in grantedPermissionsSet
+
+    /**
+     * Launches the permission screen with only the permissions the installed Health
+     * Connect can grant: an unsupported entry makes the whole request fail, which would
+     * leave the app with no access at all.
+     */
+    fun requestPermissions(permissions: Set<String>) {
+        val requestable = HealthConnectManager(context).filterSupportedPermissions(permissions)
+        if (requestable.isEmpty()) {
+            Toast.makeText(
+                context,
+                context.getString(R.string.config_perms_nothing_supported),
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        try {
+            permissionLauncher.launch(requestable)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
 
     val scrollState = rememberScrollState()
     val statusDotTransition = rememberInfiniteTransition(label = "local_http_status_dot")
@@ -195,13 +248,7 @@ fun ConfigurationScreen(
         floatingActionButton = {
             if (missingPermissionsForEnabled.isNotEmpty()) {
                 ExtendedFloatingActionButton(
-                    onClick = {
-                        try {
-                            permissionLauncher.launch(missingPermissionsForEnabled)
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show()
-                        }
-                    },
+                    onClick = { requestPermissions(missingPermissionsForEnabled) },
                     icon = { Icon(Icons.Filled.Shield, "Grant Permission") },
                     text = { Text(stringResource(R.string.config_action_grant)) },
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -634,7 +681,10 @@ fun ConfigurationScreen(
             }
 
             // ── Sync schedule ─────────────────────────────────────────────────
-            if (isBackgroundGranted) {
+            // Scheduling is configurable as soon as Health Connect access exists: background
+            // reads are a capability of the installed Health Connect build, so a device that
+            // cannot grant it must not lose scheduled syncs entirely.
+            if (hasPermissions == true) {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -767,7 +817,11 @@ fun ConfigurationScreen(
                         }
                     }
                 }
-            } else if (hasPermissions == true && !isBackgroundGranted) {
+            }
+
+            // The grant action is only offered when this device's Health Connect build
+            // actually supports background reads (see the notice below otherwise).
+            if (hasPermissions == true && !isBackgroundGranted && healthConnectSupport.backgroundRead) {
                 OutlinedCard(
                     modifier = Modifier.fillMaxWidth(),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
@@ -782,10 +836,39 @@ fun ConfigurationScreen(
                         Text(stringResource(R.string.config_bg_perm_desc), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(modifier = Modifier.height(10.dp))
                         Button(onClick = {
-                            try { permissionLauncher.launch(setOf(HealthConnectManager.BACKGROUND_PERMISSION_STR)) } catch (e: Exception) { Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show() }
+                            requestPermissions(setOf(HealthConnectManager.BACKGROUND_PERMISSION_STR))
                         }, modifier = Modifier.fillMaxWidth()) {
                             Text(stringResource(R.string.config_action_grant_bg))
                         }
+                    }
+                }
+            }
+
+            // Background reads are unavailable on this Health Connect build (older APK or a
+            // system module without the feature). Scheduling still works, so explain the
+            // limitation instead of sending users into a request that can never succeed.
+            if (hasPermissions == true && !isBackgroundGranted && !healthConnectSupport.backgroundRead) {
+                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Filled.Info,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                stringResource(R.string.config_bg_perm_unsupported_title),
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            stringResource(R.string.config_bg_perm_unsupported_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
@@ -798,13 +881,18 @@ fun ConfigurationScreen(
         }
 
         if (showPermissionsSheet) {
-            PermissionsBottomSheet(grantedPermissionsSet = grantedPermissionsSet, onDismiss = { showPermissionsSheet = false })
+            PermissionsBottomSheet(
+                grantedPermissionsSet = grantedPermissionsSet,
+                unsupportedDataTypes = healthConnectSupport.unsupportedDataTypes,
+                onDismiss = { showPermissionsSheet = false }
+            )
         }
 
         if (showDataTypesSheet) {
             DataTypesBottomSheet(
                 enabledDataTypes = enabledDataTypes,
                 grantedPermissionsSet = grantedPermissionsSet,
+                unsupportedDataTypes = healthConnectSupport.unsupportedDataTypes,
                 missingPermissionsForEnabled = missingPermissionsForEnabled,
                 onDismiss = { showDataTypesSheet = false },
                 onToggleDataType = { dataType, checked ->
@@ -813,7 +901,7 @@ fun ConfigurationScreen(
                     preferencesManager.setEnabledDataTypes(newSet)
                 },
                 onRequestPermissions = {
-                    try { permissionLauncher.launch(missingPermissionsForEnabled) } catch (e: Exception) { Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show() }
+                    requestPermissions(missingPermissionsForEnabled)
                     showDataTypesSheet = false
                 }
             )
@@ -835,6 +923,16 @@ fun ConfigurationScreen(
         )
     }
 }
+
+/**
+ * Capabilities of the Health Connect build installed on the device, plus the data types it
+ * cannot provide. Defaults assume full support so nothing is hidden before the probe runs.
+ */
+private data class HealthConnectSupport(
+    val backgroundRead: Boolean = true,
+    val historyRead: Boolean = true,
+    val unsupportedDataTypes: Set<HealthDataType> = emptySet(),
+)
 
 @Composable
 private fun resolutionChipOptions(family: DataResolutionFamily): List<Pair<Int, String>> {
@@ -919,6 +1017,7 @@ private fun ResolutionChipRow(
 fun DataTypesBottomSheet(
     enabledDataTypes: Set<HealthDataType>,
     grantedPermissionsSet: Set<String>,
+    unsupportedDataTypes: Set<HealthDataType> = emptySet(),
     missingPermissionsForEnabled: Set<String>,
     onDismiss: () -> Unit,
     onToggleDataType: (HealthDataType, Boolean) -> Unit,
@@ -945,11 +1044,12 @@ fun DataTypesBottomSheet(
             androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 items(HealthDataType.entries) { dataType ->
                     val isPermissionGranted = HealthPermission.getReadPermission(dataType.recordClass) in grantedPermissionsSet
+                    val isSupported = dataType !in unsupportedDataTypes
                     val isEnabled = dataType in enabledDataTypes
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .alpha(if (isPermissionGranted) 1f else 0.5f),
+                            .alpha(if (isSupported && isPermissionGranted) 1f else 0.5f),
                     ) {
                         Row(
                             modifier = Modifier
@@ -976,7 +1076,11 @@ fun DataTypesBottomSheet(
                                         fontWeight = FontWeight.Medium,
                                     )
                                     Text(
-                                        text = stringResource(id = dataType.rationaleResId),
+                                        text = if (isSupported) {
+                                            stringResource(id = dataType.rationaleResId)
+                                        } else {
+                                            stringResource(R.string.dt_not_supported)
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -984,6 +1088,7 @@ fun DataTypesBottomSheet(
                             }
                             Switch(
                                 checked = isEnabled,
+                                enabled = isSupported,
                                 onCheckedChange = { checked -> onToggleDataType(dataType, checked) },
                             )
                         }

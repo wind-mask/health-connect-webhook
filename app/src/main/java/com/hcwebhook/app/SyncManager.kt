@@ -49,7 +49,7 @@ class SyncManager(private val context: Context) {
         end: Instant? = null
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
-            val enabledTypes = preferencesManager.getEnabledDataTypes()
+            val enabledTypes = readableEnabledDataTypes()
             if (enabledTypes.isEmpty()) {
                 return@withContext Result.failure(Exception("No data types enabled"))
             }
@@ -109,7 +109,7 @@ class SyncManager(private val context: Context) {
                 return@withContext Result.failure(Exception("No enabled webhook URLs configured and local TCP server is disabled"))
             }
 
-            val enabledTypes = preferencesManager.getEnabledDataTypes()
+            val enabledTypes = readableEnabledDataTypes()
             if (enabledTypes.isEmpty()) {
                 return@withContext Result.failure(Exception("No data types enabled"))
             }
@@ -301,6 +301,15 @@ class SyncManager(private val context: Context) {
             )
         }
     }
+
+    /**
+     * Types the user enabled, minus records this device's Health Connect cannot provide
+     * (e.g. skin temperature on 1.0.x). Reading an unsupported record type throws, which
+     * would otherwise abort the entire sync instead of just skipping that type.
+     */
+    private fun readableEnabledDataTypes(): Set<HealthDataType> =
+        preferencesManager.getEnabledDataTypes()
+            .filterTo(mutableSetOf()) { healthConnectManager.isDataTypeSupported(it) }
 
     private fun filterHealthData(data: HealthData, allowedTypes: Set<String>): HealthData {
         val allowed = allowedTypes.map { it.uppercase() }.toSet()

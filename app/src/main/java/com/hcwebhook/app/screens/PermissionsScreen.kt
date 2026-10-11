@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun PermissionsBottomSheet(
     grantedPermissionsSet: Set<String>,
+    unsupportedDataTypes: Set<HealthDataType> = emptySet(),
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -97,7 +98,8 @@ fun PermissionsBottomSheet(
                     val isGranted = HealthPermission.getReadPermission(dataType.recordClass) in grantedPermissionsSet
                     PermissionRow(
                         dataType = dataType,
-                        isGranted = isGranted
+                        isGranted = isGranted,
+                        isSupported = dataType !in unsupportedDataTypes
                     )
                 }
             }
@@ -136,7 +138,7 @@ fun PermissionsBottomSheet(
 }
 
 @Composable
-private fun PermissionRow(dataType: HealthDataType, isGranted: Boolean) {
+private fun PermissionRow(dataType: HealthDataType, isGranted: Boolean, isSupported: Boolean = true) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -162,13 +164,19 @@ private fun PermissionRow(dataType: HealthDataType, isGranted: Boolean) {
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
                 )
                 Text(
-                    text = stringResource(id = dataType.rationaleResId),
+                    text = if (isSupported) stringResource(id = dataType.rationaleResId) else stringResource(R.string.dt_not_supported),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
-        if (isGranted) {
+        if (!isSupported) {
+            Text(
+                text = stringResource(R.string.perms_status_unsupported),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else if (isGranted) {
             Icon(
                 imageVector = Icons.Filled.CheckCircle,
                 contentDescription = stringResource(R.string.perms_status_granted),

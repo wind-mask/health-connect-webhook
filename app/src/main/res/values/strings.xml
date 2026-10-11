@@ -243,10 +243,15 @@
     <string name="config_bg_perm_title">Background Permission Required</string>
     <string name="config_bg_perm_desc">To sync data automatically on a schedule or interval, you must grant Health Connect access for background use.</string>
     <string name="config_action_grant_bg">Grant Background Permission</string>
+    <string name="config_bg_perm_unsupported_title">Background Reads Not Supported</string>
+    <string name="config_bg_perm_unsupported_desc">This device\'s Health Connect version cannot read data in the background, so that permission cannot be granted here. Scheduled syncs still run; interval syncs can only read data while the app is open. Updating Health Connect may enable background reads.</string>
+    <string name="config_perms_nothing_supported">This device\'s Health Connect does not support these permissions</string>
     <string name="config_last_sync_title">Last Sync</string>
     <string name="config_action_grant">Grant Permission</string>
     <string name="config_action_grant_short">Grant</string>
     <string name="config_action_grant_missing">Grant Missing Permissions</string>
+    <string name="dt_not_supported">Not supported by this device\'s Health Connect</string>
+    <string name="perms_status_unsupported">Not supported</string>
     <string name="config_toast_error">Error: %1$s</string>
     <string name="config_local_tcp_title">Local HTTP Server</string>
     <string name="config_local_tcp_desc">Expose realtime Health Connect JSON over HTTP for local agents and tools.</string>
